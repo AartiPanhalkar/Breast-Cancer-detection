@@ -1,0 +1,259 @@
+package com.example.breastcancerdetection;
+
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.AppCompatActivity;
+
+import android.Manifest;
+import android.app.ProgressDialog;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.media.ThumbnailUtils;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.provider.MediaStore;
+import android.view.View;
+import android.widget.Button;
+import android.widget.ImageView;
+import android.widget.TextView;
+
+import com.example.breastcancerdetection.ml.Model;
+
+import org.tensorflow.lite.DataType;
+import org.tensorflow.lite.support.tensorbuffer.TensorBuffer;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+
+public class ImagePrediction extends AppCompatActivity {
+    TextView result, confidence;
+    ImageView imageView;
+    Button picture, gal;
+    int imageSize = 224;
+    int maxPos = 0;
+    private ProgressDialog progress;
+    static final int REQUEST_IMAGE_CAPTURE = 1;
+    ProgressDialog progressBar;
+    private int progressBarStatus = 0;
+    private Handler progressBarHandler = new Handler();
+    private long fileSize = 0;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_image_prediction);
+
+
+        result = findViewById(R.id.result);
+        confidence = findViewById(R.id.confidence);
+        imageView = findViewById(R.id.imageView);
+        picture = findViewById(R.id.takebtn);
+        gal = (Button) findViewById(R.id.buttontt);
+
+        picture.setOnClickListener(new View.OnClickListener() {
+
+            @Override
+            public void onClick(View view) {
+                // Launch camera if we have permission
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    if (checkSelfPermission(android.Manifest.permission.CAMERA) == PackageManager.PERMISSION_DENIED) {
+
+                        Intent cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+                        startActivityForResult(cameraIntent, 1);
+                    } else {
+
+                        requestPermissions(new String[]{Manifest.permission.CAMERA}, 100);
+                    }
+                }
+            }
+        });
+
+        gal.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                Intent cameraIntent = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+                startActivityForResult(cameraIntent, 3);
+            }
+        });
+    }
+
+    public void classifyImage(Bitmap image) {
+        try {
+            Model model = Model.newInstance(getApplicationContext());
+
+            // Creates inputs for reference.
+            TensorBuffer inputFeature0 = TensorBuffer.createFixedSize(new int[]{1, 224, 224, 3}, DataType.FLOAT32);
+            ByteBuffer byteBuffer = ByteBuffer.allocateDirect(4 * imageSize * imageSize * 3);
+            byteBuffer.order(ByteOrder.nativeOrder());
+
+            int[] intValue = new int[imageSize * imageSize];
+            image.getPixels(intValue, 0, image.getWidth(), 0, 0, image.getWidth(), image.getHeight());
+
+            int pixel = 0;
+            for (int i = 0; i < imageSize; i++) {
+                for (int j = 0; j < imageSize; j++) {
+                    int val = intValue[pixel++];
+                    byteBuffer.putFloat(((val >> 16) & 0xFF) * (1.f / 255.f));
+                    byteBuffer.putFloat(((val >> 8) & 0xFF) * (1.f / 255.f));
+                    byteBuffer.putFloat((val & 0xFF) * (1.f / 255.f));
+
+                }
+            }
+
+            inputFeature0.loadBuffer(byteBuffer);
+
+            Model.Outputs outputs = model.process(inputFeature0);
+            TensorBuffer outputFeatures0 = outputs.getOutputFeature0AsTensorBuffer();
+
+            float[] yolo = outputFeatures0.getFloatArray();
+
+
+            float maxConfidence = 0;
+            for (int i = 0; i < yolo.length; i++) {
+                if (yolo[i] > maxConfidence) {
+                    maxConfidence = yolo[i];
+                    maxPos = i;
+
+                }
+            }
+
+            /*0 Cancer Detect DCIS Pro
+            1 Cancer Detect IDC Stage 3
+            2 Cancer Detect LCIS Stage 1 Early
+            3 Negative
+            4 Invalid Image*/
+
+            String[] classes = {"Cancer Detect DCIS Pro", "Cancer Detect IDC Stage 3",
+                    "Cancer Detect LCIS Stage 1 Early", "Negative", "Invalid Image"};
+            // result.setText(classes[maxPos]);
+
+         //   result.setText(classes[maxPos]);
+           /* final Progress dialog =
+                    new ProgressDialog(CancerDetection.this);*/
+           progressBar = new ProgressDialog(ImagePrediction.this);
+            progressBar.setCancelable(true);
+            progressBar.setMessage("Image Prediction Processing ...");
+            progressBar.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+            progressBar.setProgress(0);
+            progressBar.setMax(100);
+            progressBar.show();
+            //reset progress bar and filesize status
+            progressBarStatus = 0;
+            fileSize = 0;
+
+            new Thread(new Runnable() {
+                public void run() {
+
+                    result.setText(classes[maxPos]);
+                    while (progressBarStatus < 100) {
+                        // performing operation
+
+                        progressBarStatus = doOperation();
+                        try {
+                            Thread.sleep(1000);
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                        // Updating the progress bar
+                        progressBarHandler.post(new Runnable() {
+                            public void run() {
+                                progressBar.setProgress(progressBarStatus);
+                            }
+                        });
+                    }
+                    // performing operation if file is downloaded,
+
+                    if (progressBarStatus >= 100) {
+                        // sleeping for 1 second after operation completed
+                      //
+                        try {
+                            Thread.sleep(1000);
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                        // close the progress bar dialog
+                        progressBar.dismiss();
+
+                    }
+                }
+            }).start();
+
+
+            result.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    Intent i=new Intent(ImagePrediction.this,DoctorActivity.class);
+                    startActivity(i);
+
+                }
+            });
+            model.close();
+
+        } catch (IOException e) {
+
+        }
+    }
+
+    private int doOperation() {
+
+
+        while (fileSize <= 10000) {
+            fileSize++;
+            if (fileSize == 1000) {
+                return 10;
+            } else if (fileSize == 2000) {
+                return 20;
+            } else if (fileSize == 3000) {
+                return 30;
+            } else if (fileSize == 4000) {
+                return 40; // you can add more else if
+            }
+            else if (fileSize == 5000) {
+                return 50; // you can add more else if
+            }
+         /* else {
+                return 100;
+            }*/
+        }//end of while
+        return 100;
+    }//end of doOperation
+
+
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        if(resultCode == RESULT_OK) {
+            if (requestCode == 1) {
+                Bitmap image = (Bitmap) data.getExtras().get("data");
+                int dimension = Math.min(image.getWidth(), image.getHeight());
+                image = ThumbnailUtils.extractThumbnail(image, dimension, dimension);
+
+                imageView.setImageBitmap(image);
+                // demoTxt.setVisibility(View.GONE);
+                //clickHere.setVisibility(View.VISIBLE);
+                confidence.setVisibility(View.VISIBLE);
+                result.setVisibility(View.VISIBLE);
+
+                image = Bitmap.createScaledBitmap(image, imageSize, imageSize, false);
+                classifyImage(image);
+
+            } else {
+                Uri dat = data.getData();
+                Bitmap image = null;
+                try {
+                    image = MediaStore.Images.Media.getBitmap(this.getContentResolver(), dat);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                imageView.setImageBitmap(image);
+
+                image = Bitmap.createScaledBitmap(image, imageSize, imageSize, false);
+                classifyImage(image);
+            }
+        }
+        super.onActivityResult(requestCode, resultCode, data);
+    }
+}
